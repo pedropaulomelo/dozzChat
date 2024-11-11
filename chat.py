@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
+
 import sys
 import os
 import openai
 import requests
-from asterisk.agi import AGI
 import logging
+from pyst import agi  # Biblioteca para interação com AGI
 
 # Configurações da API da OpenAI
-OPENAI_API_KEY = '***'
+OPENAI_API_KEY = 'SUA_API_KEY_OPENAI'
 openai.api_key = OPENAI_API_KEY
 
 # Configuração do logging
@@ -91,34 +92,6 @@ Se alguem perguntar se algum usuario esta cadastrado na unidade ou qualquer outr
 Qualquer chatData que contiver o campo userName deve conter o campo userId referente ao nome de usuario ou requestingUserId caso seja o proprio user que esta fazendo o contato, voce encontra esses dados no seu contexto a seguir.
 """
 
-# Função para gravar o áudio do usuário com detecção de silêncio
-def gravar_audio(agi, arquivo_audio, duracao_maxima=30, silencio=2):
-    agi.verbose("Iniciando gravação de áudio com detecção de silêncio")
-    agi.exec('Record', f'{arquivo_audio},wav,,k,{duracao_maxima},{silencio}')
-
-# Função para transcrever o áudio usando a API Whisper
-def transcrever_audio(arquivo_audio):
-    with open(arquivo_audio, 'rb') as audio_file:
-        response = openai.Audio.transcribe('whisper-1', audio_file)
-        texto_transcrito = response['text']
-    return texto_transcrito
-
-# Função para enviar o texto ao GPT e obter a resposta
-def obter_resposta_gpt(contexto, texto_usuario):
-    messages = [
-        {"role": "system", "content": contexto},
-        {"role": "user", "content": texto_usuario}
-    ]
-    response = openai.ChatCompletion.create(
-        model='gpt-4o-mini',
-        messages=messages,
-        max_tokens=150,
-        n=1,
-        temperature=0.7,
-    )
-    texto_resposta = response['choices'][0]['message']['content'].strip()
-    return texto_resposta
-
 # Função para converter o texto em áudio usando a API de TTS da OpenAI
 def converter_texto_em_audio(texto, arquivo_audio):
     url = 'https://api.openai.com/v1/audio/speech'
@@ -140,62 +113,85 @@ def converter_texto_em_audio(texto, arquivo_audio):
 
 # Função principal
 def main():
-    agi = AGI()
-    agi.verbose("Iniciando o script voz_para_gpt.py")
+    agi_obj = agi()
+    agi_obj.verbose("Iniciando o script voz_para_gpt.py")
+
+    # Atender a chamada
+    agi_obj.answer()
 
     # Definir caminhos dos arquivos de áudio
     caminho_audio_usuario = '/tmp/usuario_audio.wav'
     caminho_audio_resposta = '/tmp/resposta_audio.wav'
 
-    # Gravar o áudio do usuário
-    gravar_audio(agi, '/tmp/usuario_audio')
+    # Gravar o áudio do usuário com detecção de silêncio
+    agi_obj.verbose("Iniciando gravação de áudio com detecção de silêncio")
+    record_options = {
+        'format': 'wav',
+        'escape_digits': '',
+        'timeout': 30000,
+        'silence': 2
+    }
+    agi_obj.record_file('/tmp/usuario_audio', **record_options)
 
     # Verificar se o arquivo foi gravado
     if not os.path.exists(caminho_audio_usuario):
-        agi.verbose("Erro: Arquivo de áudio do usuário não encontrado")
-        agi.hangup()
+        agi_obj.verbose("Erro: Arquivo de áudio do usuário não encontrado")
+        agi_obj.hangup()
         return
 
     # Transcrever o áudio
     try:
-        texto_usuario = transcrever_audio(caminho_audio_usuario)
-        agi.verbose(f"Texto transcrito: {texto_usuario}")
+        with open(caminho_audio_usuario, 'rb') as audio_file:
+            response = openai.Audio.transcribe('whisper-1', audio_file)
+            texto_usuario = response['text']
+        agi_obj.verbose(f"Texto transcrito: {texto_usuario}")
         logging.info(f"Texto transcrito: {texto_usuario}")
     except Exception as e:
-        agi.verbose(f"Erro na transcrição do áudio: {e}")
-        agi.exec('Playback', 'desculpe-nao-entendi')  # Certifique-se de que o áudio existe
-        agi.hangup()
+        agi_obj.verbose(f"Erro na transcrição do áudio: {e}")
+        agi_obj.stream_file('desculpe-nao-entendi')  # Certifique-se de que o áudio existe
+        agi_obj.hangup()
         return
 
     # Obter resposta do GPT
     try:
-        texto_resposta = obter_resposta_gpt(contexto, texto_usuario)
-        agi.verbose(f"Resposta do GPT: {texto_resposta}")
+        messages = [
+            {"role": "system", "content": contexto},
+            {"role": "user", "content": texto_usuario}
+        ]
+        response = openai.ChatCompletion.create(
+            model='gpt-4o-mini',
+            messages=messages,
+            max_tokens=150,
+            n=1,
+            temperature=0.7,
+        )
+        texto_resposta = response['choices'][0]['message']['content'].strip()
+        agi_obj.verbose(f"Resposta do GPT: {texto_resposta}")
         logging.info(f"Resposta do GPT: {texto_resposta}")
     except Exception as e:
-        agi.verbose(f"Erro ao obter resposta do GPT: {e}")
-        agi.exec('Playback', 'erro-processar-solicitacao')
-        agi.hangup()
+        agi_obj.verbose(f"Erro ao obter resposta do GPT: {e}")
+        agi_obj.stream_file('erro-processar-solicitacao')
+        agi_obj.hangup()
         return
 
     # Converter a resposta em áudio
     try:
         converter_texto_em_audio(texto_resposta, caminho_audio_resposta)
     except Exception as e:
-        agi.verbose(f"Erro na conversão de texto em áudio: {e}")
-        agi.exec('Playback', 'erro-converter-audio')
-        agi.hangup()
+        agi_obj.verbose(f"Erro na conversão de texto em áudio: {e}")
+        agi_obj.stream_file('erro-converter-audio')
+        agi_obj.hangup()
         return
 
     # Reproduzir o áudio da resposta para o usuário
-    agi.stream_file('/tmp/resposta_audio')
+    agi_obj.stream_file('/tmp/resposta_audio')
 
     # Limpar arquivos temporários
     os.remove(caminho_audio_usuario)
     os.remove(caminho_audio_resposta)
 
-    agi.verbose("Script concluído com sucesso")
-    agi.hangup()
+    agi_obj.verbose("Script concluído com sucesso")
+    agi_obj.hangup()
 
 if __name__ == '__main__':
     main()
