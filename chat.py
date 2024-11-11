@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-
 import sys
 import os
 import openai
 import requests
 import logging
-from pyst import agi  # Biblioteca para interação com AGI
 
 # Configurações da API da OpenAI
 OPENAI_API_KEY = 'SUA_API_KEY_OPENAI'
@@ -92,51 +90,62 @@ Se alguem perguntar se algum usuario esta cadastrado na unidade ou qualquer outr
 Qualquer chatData que contiver o campo userName deve conter o campo userId referente ao nome de usuario ou requestingUserId caso seja o proprio user que esta fazendo o contato, voce encontra esses dados no seu contexto a seguir.
 """
 
-# Função para converter o texto em áudio usando a API de TTS da OpenAI
-def converter_texto_em_audio(texto, arquivo_audio):
-    url = 'https://api.openai.com/v1/audio/speech'
-    headers = {
-        'Authorization': f'Bearer {OPENAI_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-    data = {
-        'model': 'tts-1',
-        'input': texto,
-        'voice': 'nova'
-    }
-    response = requests.post(url, headers=headers, json=data)
-    if response.status_code == 200:
-        with open(arquivo_audio, 'wb') as f:
-            f.write(response.content)
-    else:
-        raise Exception(f"Erro ao gerar áudio: {response.status_code} - {response.text}")
+# Funções para interação AGI
+
+def get_agi_variables():
+    agi_variables = {}
+    while True:
+        line = sys.stdin.readline().strip()
+        if line == '':
+            break
+        key, value = line.split(':', 1)
+        agi_variables[key.strip()] = value.strip()
+    return agi_variables
+
+def agi_command(command):
+    sys.stdout.write(f'{command}\n')
+    sys.stdout.flush()
+    response = sys.stdin.readline().strip()
+    return response
+
+def agi_verbose(message, level=1):
+    agi_command(f'VERBOSE "{message}" {level}')
+
+def agi_answer():
+    agi_command('ANSWER')
+
+def agi_hangup():
+    agi_command('HANGUP')
+
+def agi_record_file(filename, format='wav', escape_digits='', timeout=30000, offset=0, silence=0):
+    command = f'RECORD FILE {filename} {format} "{escape_digits}" {timeout} {offset} s={silence}'
+    response = agi_command(command)
+    return response
+
+def agi_stream_file(filename):
+    agi_command(f'STREAM FILE {filename} ""')
 
 # Função principal
 def main():
-    agi_obj = agi()
-    agi_obj.verbose("Iniciando o script voz_para_gpt.py")
+    # Obter as variáveis AGI
+    agi_variables = get_agi_variables()
 
     # Atender a chamada
-    agi_obj.answer()
+    agi_answer()
+    agi_verbose("Iniciando o script voz_para_gpt.py")
 
     # Definir caminhos dos arquivos de áudio
     caminho_audio_usuario = '/tmp/usuario_audio.wav'
     caminho_audio_resposta = '/tmp/resposta_audio.wav'
 
-    # Gravar o áudio do usuário com detecção de silêncio
-    agi_obj.verbose("Iniciando gravação de áudio com detecção de silêncio")
-    record_options = {
-        'format': 'wav',
-        'escape_digits': '',
-        'timeout': 30000,
-        'silence': 2
-    }
-    agi_obj.record_file('/tmp/usuario_audio', **record_options)
+    # Gravar o áudio do usuário
+    agi_verbose("Iniciando gravação de áudio com detecção de silêncio")
+    agi_record_file('/tmp/usuario_audio', 'wav', '', 30000, 0, 2)
 
     # Verificar se o arquivo foi gravado
     if not os.path.exists(caminho_audio_usuario):
-        agi_obj.verbose("Erro: Arquivo de áudio do usuário não encontrado")
-        agi_obj.hangup()
+        agi_verbose("Erro: Arquivo de áudio do usuário não encontrado")
+        agi_hangup()
         return
 
     # Transcrever o áudio
@@ -144,12 +153,12 @@ def main():
         with open(caminho_audio_usuario, 'rb') as audio_file:
             response = openai.Audio.transcribe('whisper-1', audio_file)
             texto_usuario = response['text']
-        agi_obj.verbose(f"Texto transcrito: {texto_usuario}")
+        agi_verbose(f"Texto transcrito: {texto_usuario}")
         logging.info(f"Texto transcrito: {texto_usuario}")
     except Exception as e:
-        agi_obj.verbose(f"Erro na transcrição do áudio: {e}")
-        agi_obj.stream_file('desculpe-nao-entendi')  # Certifique-se de que o áudio existe
-        agi_obj.hangup()
+        agi_verbose(f"Erro na transcrição do áudio: {e}")
+        agi_stream_file('desculpe-nao-entendi')
+        agi_hangup()
         return
 
     # Obter resposta do GPT
@@ -166,32 +175,47 @@ def main():
             temperature=0.7,
         )
         texto_resposta = response['choices'][0]['message']['content'].strip()
-        agi_obj.verbose(f"Resposta do GPT: {texto_resposta}")
+        agi_verbose(f"Resposta do GPT: {texto_resposta}")
         logging.info(f"Resposta do GPT: {texto_resposta}")
     except Exception as e:
-        agi_obj.verbose(f"Erro ao obter resposta do GPT: {e}")
-        agi_obj.stream_file('erro-processar-solicitacao')
-        agi_obj.hangup()
+        agi_verbose(f"Erro ao obter resposta do GPT: {e}")
+        agi_stream_file('erro-processar-solicitacao')
+        agi_hangup()
         return
 
-    # Converter a resposta em áudio
+    # Converter a resposta em áudio usando a API de TTS da OpenAI
     try:
-        converter_texto_em_audio(texto_resposta, caminho_audio_resposta)
+        url = 'https://api.openai.com/v1/audio/speech'
+        headers = {
+            'Authorization': f'Bearer {OPENAI_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            'model': 'tts-1',
+            'input': texto_resposta,
+            'voice': 'nova'
+        }
+        tts_response = requests.post(url, headers=headers, json=data)
+        if tts_response.status_code == 200:
+            with open(caminho_audio_resposta, 'wb') as f:
+                f.write(tts_response.content)
+        else:
+            raise Exception(f"Erro ao gerar áudio: {tts_response.status_code} - {tts_response.text}")
     except Exception as e:
-        agi_obj.verbose(f"Erro na conversão de texto em áudio: {e}")
-        agi_obj.stream_file('erro-converter-audio')
-        agi_obj.hangup()
+        agi_verbose(f"Erro na conversão de texto em áudio: {e}")
+        agi_stream_file('erro-converter-audio')
+        agi_hangup()
         return
 
     # Reproduzir o áudio da resposta para o usuário
-    agi_obj.stream_file('/tmp/resposta_audio')
+    agi_stream_file('/tmp/resposta_audio')
 
     # Limpar arquivos temporários
     os.remove(caminho_audio_usuario)
     os.remove(caminho_audio_resposta)
 
-    agi_obj.verbose("Script concluído com sucesso")
-    agi_obj.hangup()
+    agi_verbose("Script concluído com sucesso")
+    agi_hangup()
 
 if __name__ == '__main__':
     main()
